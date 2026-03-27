@@ -2,46 +2,22 @@ import { serve } from "bun";
 import index from "./index.html";
 import { spawn } from "bun-pty";
 import type { IPty } from "bun-pty";
-import os from "os";
-
-const TERMINAL_PASSWORD = process.env.TERMINAL_PASSWORD || "secret";
-const shell = os.platform() === "win32" ? "powershell.exe" : "bash";
+import { config } from "./config";
 
 let isTerminalInUse = false;
 
 const server = serve({
+  port: config.port,
   routes: {
     // Serve index.html for all unmatched routes.
     "/*": index,
-
-    "/api/hello": {
-      async GET(req) {
-        return Response.json({
-          message: "Hello, world!",
-          method: "GET",
-        });
-      },
-      async PUT(req) {
-        return Response.json({
-          message: "Hello, world!",
-          method: "PUT",
-        });
-      },
-    },
-
-    "/api/hello/:name": async req => {
-      const name = req.params.name;
-      return Response.json({
-        message: `Hello, ${name}!`,
-      });
-    },
   },
 
   fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/api/terminal/ws") {
       const token = url.searchParams.get("token");
-      if (token !== TERMINAL_PASSWORD) {
+      if (token !== config.TERMINAL_PASSWORD) {
         return new Response("Unauthorized", { status: 401 });
       }
       
@@ -66,7 +42,7 @@ const server = serve({
       isTerminalInUse = true;
       (ws.data as any).hasLock = true;
 
-      const ptyProcess = spawn(shell, [], {
+      const ptyProcess = spawn(config.shell, [], {
         name: "xterm-color",
         cols: 80,
         rows: 24,
