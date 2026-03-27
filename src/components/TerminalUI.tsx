@@ -17,7 +17,7 @@ export function TerminalUI({ token, onDisconnect }: TerminalUIProps) {
 
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: "monospace",
+      fontFamily: '"PlemolJP Console NF", "JetBrainsMono Nerd Font Mono", monospace',
       theme: {
         background: "#1e1e1e",
       }

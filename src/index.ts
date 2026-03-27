@@ -3,6 +3,7 @@ import index from "./index.html";
 import { spawn } from "bun-pty";
 import type { IPty } from "bun-pty";
 import { config } from "./config";
+import { PTYLogger, createLogFilename } from "./logger";
 
 let isTerminalInUse = false;
 
@@ -50,16 +51,20 @@ const server = serve({
         env: process.env as any,
       });
 
+      const logger = new PTYLogger(`./logs/${createLogFilename()}`)
       const dataHandler = ptyProcess.onData((data) => {
+        logger.output(data);
         ws.send(data);
       });
 
       // Store the pty process and handler on the websocket context
       (ws.data as any).ptyProcess = ptyProcess;
       (ws.data as any).dataHandler = dataHandler;
+      (ws.data as any).logger = logger;
     },
     message(ws, message) {
       const ptyProcess = (ws.data as any).ptyProcess as IPty;
+      const logger = (ws.data as any).logger;
       if (!ptyProcess) return;
 
       if (typeof message === "string") {
@@ -69,12 +74,16 @@ const server = serve({
             ptyProcess.resize(json.cols, json.rows);
             return;
           }
+          logger.input(message);
+          ptyProcess.write(message);
         } catch (e) {
           // If it's not JSON, it's just raw terminal input
+          logger.input(message);
           ptyProcess.write(message);
         }
       } else {
         // Handle binary data
+        logger.input(message.toString());
         ptyProcess.write(message.toString());
       }
     },
@@ -88,6 +97,11 @@ const server = serve({
       
       if (dataHandler && typeof dataHandler.dispose === 'function') {
         dataHandler.dispose();
+      }
+
+      const logger = (ws.data as any).logger;
+      if (logger && typeof logger.close === 'function') {
+        logger.close();
       }
       
       if (ptyProcess) {
