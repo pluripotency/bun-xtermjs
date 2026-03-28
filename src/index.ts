@@ -4,7 +4,7 @@ import { spawn } from "bun-pty";
 import type { IPty } from "bun-pty";
 import { config } from "./config";
 import { PTYLogger, createLogFilename } from "./logger";
-import { replayToWebSocket } from "./replay-ws";
+import { replayToWebSocket, ReplayController } from "./replay-ws";
 import { readdir } from "fs/promises";
 import path from "path";
 
@@ -99,7 +99,9 @@ const server = serve({
       if (wsType === "replay") {
         // Start log replay
         const { logFile, speed } = ws.data as any;
-        replayToWebSocket(ws as any, logFile, speed).catch((err) => {
+        const controller = new ReplayController();
+        (ws.data as any).controller = controller;
+        replayToWebSocket(ws as any, logFile, speed, controller).catch((err) => {
           console.error("Replay error:", err);
           try { ws.close(4500, "Replay error"); } catch {}
         });
@@ -135,7 +137,16 @@ const server = serve({
     },
     message(ws, message) {
       const wsType = (ws.data as any).wsType;
-      if (wsType === "replay") return; // replay is read-only
+      if (wsType === "replay") {
+        // Handle pause/resume control messages for replay
+        try {
+          const json = JSON.parse(message.toString());
+          const controller = (ws.data as any).controller as ReplayController | undefined;
+          if (json.type === "pause") controller?.pause();
+          else if (json.type === "resume") controller?.resume();
+        } catch {}
+        return;
+      }
 
       const ptyProcess = (ws.data as any).ptyProcess as IPty;
       const logger = (ws.data as any).logger;

@@ -9,7 +9,7 @@ interface TerminalLogViewProps {
   onDisconnect: () => void;
 }
 
-type ReplayStatus = "idle" | "loading" | "playing" | "done" | "error";
+type ReplayStatus = "idle" | "loading" | "playing" | "paused" | "done" | "error";
 
 const SPEED_OPTIONS = [
   { label: "1×", value: 1 },
@@ -151,6 +151,19 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
     };
   }, [selectedFile, token, speed, status]);
 
+  // Pause / Resume replay
+  const togglePause = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (status === "playing") {
+      ws.send(JSON.stringify({ type: "pause" }));
+      setStatus("paused");
+    } else if (status === "paused") {
+      ws.send(JSON.stringify({ type: "resume" }));
+      setStatus("playing");
+    }
+  }, [status]);
+
   // Stop replay
   const stopReplay = useCallback(() => {
     if (wsRef.current) {
@@ -170,12 +183,13 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
     };
   }, []);
 
-  const isPlaying = status === "playing" || status === "loading";
+  const isActive = status === "playing" || status === "loading" || status === "paused";
 
   const statusLabel = {
     idle: "",
     loading: "Connecting…",
     playing: "▶ Replaying",
+    paused: "⏸ Paused",
     done: "✓ Replay complete",
     error: `✕ ${errorMsg}`,
   }[status];
@@ -184,6 +198,7 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
     idle: "",
     loading: "text-yellow-400",
     playing: "text-green-400",
+    paused: "text-orange-400",
     done: "text-blue-400",
     error: "text-red-400",
   }[status];
@@ -214,7 +229,7 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
         <select
           value={selectedFile}
           onChange={(e) => setSelectedFile(e.target.value)}
-          disabled={isPlaying}
+          disabled={isActive}
           className="px-2 py-1.5 text-xs rounded-md bg-[#292e42] text-[#a9b1d6] border border-[#3b4261] focus:border-[#7aa2f7] focus:outline-none disabled:opacity-50 max-w-[280px] truncate"
         >
           {logFiles.length === 0 && <option value="">No log files found</option>}
@@ -233,7 +248,7 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
               <button
                 key={opt.value}
                 onClick={() => setSpeed(opt.value)}
-                disabled={isPlaying}
+                disabled={isActive}
                 className={`px-2 py-1 text-[11px] font-mono transition-colors ${
                   speed === opt.value
                     ? "bg-[#7aa2f7] text-[#1a1b26] font-bold"
@@ -248,8 +263,8 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
 
         <div className="w-px h-5 bg-[#292e42]" />
 
-        {/* Play / Stop */}
-        {!isPlaying ? (
+        {/* Play / Pause / Stop */}
+        {!isActive ? (
           <button
             onClick={startReplay}
             disabled={!selectedFile || logFiles.length === 0}
@@ -258,17 +273,34 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
             ▶ Play
           </button>
         ) : (
-          <button
-            onClick={stopReplay}
-            className="px-4 py-1.5 text-xs font-medium rounded-md bg-[#f7768e] text-[#1a1b26] hover:bg-[#ff9e64] transition-colors"
-          >
-            ■ Stop
-          </button>
+          <div className="flex gap-1.5">
+            {/* Pause / Resume */}
+            <button
+              onClick={togglePause}
+              disabled={status === "loading"}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors disabled:opacity-50 ${
+                status === "paused"
+                  ? "bg-[#e0af68] text-[#1a1b26] hover:bg-[#ffc777]"
+                  : "bg-[#7aa2f7] text-[#1a1b26] hover:bg-[#82aaff]"
+              }`}
+            >
+              {status === "paused" ? "▶ Resume" : "⏸ Pause"}
+            </button>
+            {/* Stop */}
+            <button
+              onClick={stopReplay}
+              className="px-3 py-1.5 text-xs font-medium rounded-md bg-[#f7768e] text-[#1a1b26] hover:bg-[#ff9e64] transition-colors"
+            >
+              ■ Stop
+            </button>
+          </div>
         )}
 
         {/* Status */}
         {statusLabel && (
-          <span className={`text-xs font-mono ${statusColor} ml-auto animate-pulse`}>
+          <span className={`text-xs font-mono ${statusColor} ml-auto ${
+            status === "playing" || status === "loading" ? "animate-pulse" : ""
+          }`}>
             {statusLabel}
           </span>
         )}

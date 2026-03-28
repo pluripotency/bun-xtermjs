@@ -17,14 +17,50 @@ function sleep(ms: number) {
 }
 
 /**
+ * A pausable controller for the replay loop.
+ * Call pause() to block, resume() to unblock.
+ */
+export class ReplayController {
+  private _paused = false;
+  private _resolve: (() => void) | null = null;
+  private _promise: Promise<void> = Promise.resolve();
+
+  pause() {
+    if (this._paused) return;
+    this._paused = true;
+    this._promise = new Promise((r) => {
+      this._resolve = r;
+    });
+  }
+
+  resume() {
+    if (!this._paused) return;
+    this._paused = false;
+    this._resolve?.();
+    this._resolve = null;
+  }
+
+  /** Awaitable gate — resolves immediately when not paused */
+  get gate(): Promise<void> {
+    return this._promise;
+  }
+
+  get paused() {
+    return this._paused;
+  }
+}
+
+/**
  * Replay a log file over a WebSocket connection.
  * Decompresses .xz / .gz files automatically.
  * Streams only "output" entries with original timing (scaled by speed).
+ * Supports pause/resume via the provided ReplayController.
  */
 export async function replayToWebSocket(
   ws: { send(data: string | Uint8Array): void; readyState: number; close(code?: number, reason?: string): void },
   logFile: string,
   speed: number = 1,
+  controller: ReplayController = new ReplayController(),
 ) {
   if (!existsSync(logFile)) {
     ws.send(JSON.stringify({ type: "error", message: "Log file not found" }));
@@ -61,6 +97,15 @@ export async function replayToWebSocket(
       return;
     }
 
+    // Wait if paused
+    await controller.gate;
+
+    // Re-check after unpausing
+    if (ws.readyState !== 1) {
+      rl.close();
+      return;
+    }
+
     let entry: LogEntry;
     try {
       entry = JSON.parse(line);
@@ -76,6 +121,13 @@ export async function replayToWebSocket(
         const delay = Math.min(scaledDelay, MAX_DELAY_MS);
         if (delay > 1) {
           await sleep(delay);
+          // Re-check after delay (WS may have closed)
+          if (ws.readyState !== 1) {
+            rl.close();
+            return;
+          }
+          // Wait again if paused during the delay
+          await controller.gate;
         }
       }
     }
