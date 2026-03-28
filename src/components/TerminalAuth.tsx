@@ -26,8 +26,8 @@ export function TerminalAuth({ onAuthenticated, initialError }: TerminalAuthProp
     <div className="flex justify-center items-center min-h-[50vh]">
       <Card className="w-[400px]">
         <CardHeader>
-          <CardTitle>Terminal Login</CardTitle>
-          <CardDescription>Enter password to access the web terminal</CardDescription>
+          <CardTitle>Login</CardTitle>
+          <CardDescription>Enter password to access session logs and terminal</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">

@@ -6,6 +6,7 @@ import "xterm/css/xterm.css";
 interface TerminalLogViewProps {
   token: string;
   onBack: () => void;
+  onDisconnect: () => void;
 }
 
 type ReplayStatus = "idle" | "loading" | "playing" | "done" | "error";
@@ -18,7 +19,7 @@ const SPEED_OPTIONS = [
   { label: "50×", value: 50 },
 ];
 
-export function TerminalLogView({ token, onBack }: TerminalLogViewProps) {
+export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogViewProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -191,12 +192,20 @@ export function TerminalLogView({ token, onBack }: TerminalLogViewProps) {
     <div className="w-full h-full flex flex-col bg-[#1a1b26]">
       {/* Control bar */}
       <div className="flex items-center gap-3 px-4 py-2 bg-[#16161e] border-b border-[#292e42] flex-shrink-0">
-        {/* Back button */}
+        {/* Terminal button */}
         <button
           onClick={onBack}
-          className="px-3 py-1.5 text-xs font-medium rounded-md bg-[#292e42] text-[#7aa2f7] hover:bg-[#33467c] transition-colors"
+          className="px-3 py-1.5 text-xs font-medium rounded-md bg-[#292e42] text-[#9ece6a] hover:bg-[#33467c] transition-colors"
         >
-          ← Back
+          🖥 Terminal
+        </button>
+
+        {/* Disconnect */}
+        <button
+          onClick={onDisconnect}
+          className="px-3 py-1.5 text-xs font-medium rounded-md bg-[#292e42] text-[#f7768e] hover:bg-[#33467c] transition-colors"
+        >
+          Disconnect
         </button>
 
         <div className="w-px h-5 bg-[#292e42]" />
