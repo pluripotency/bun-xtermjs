@@ -10,10 +10,35 @@ type LogEntry = {
   data: string; // base64
 };
 
+export interface TimelineEvent {
+  rel: number;            // 0–1 relative position in session
+  type: "input" | "output";
+}
+
+export interface TimelineData {
+  duration: number;       // total session duration in seconds
+  firstT: number;         // absolute timestamp of first entry
+  events: TimelineEvent[]; // sampled events for rendering markers
+}
+
 const MAX_DELAY_MS = 2000;
+const PROGRESS_INTERVAL_MS = 200;
+const MAX_TIMELINE_EVENTS = 1200; // max marker dots to return
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Shared decompression helper */
+function getInputStream(logFile: string): NodeJS.ReadableStream {
+  if (logFile.endsWith(".xz")) {
+    const proc = spawn({ cmd: ["xz", "-d", "-c", logFile], stdout: "pipe" });
+    return Readable.fromWeb(proc.stdout as any);
+  } else if (logFile.endsWith(".gz")) {
+    return createReadStream(logFile).pipe(createGunzip());
+  } else {
+    return createReadStream(logFile);
+  }
 }
 
 /**
@@ -51,16 +76,71 @@ export class ReplayController {
 }
 
 /**
+ * Read timeline metadata from a log file (without streaming it to a client).
+ * Returns duration, firstT, and a sampled set of event positions for the UI.
+ */
+export async function readTimeline(logFile: string): Promise<TimelineData> {
+  if (!existsSync(logFile)) {
+    return { duration: 0, firstT: 0, events: [] };
+  }
+
+  const rl = readline.createInterface({ input: getInputStream(logFile) });
+  const raw: { t: number; type: "input" | "output" }[] = [];
+
+  for await (const line of rl) {
+    try {
+      const e = JSON.parse(line) as LogEntry;
+      raw.push({ t: e.t, type: e.type });
+    } catch {
+      continue;
+    }
+  }
+
+  if (raw.length === 0) return { duration: 0, firstT: 0, events: [] };
+
+  const firstT = raw[0]!.t;
+  const lastT = raw[raw.length - 1]!.t;
+  const duration = Math.max(0, lastT - firstT);
+
+  // Sample events (avoid sending thousands of markers)
+  let events: TimelineEvent[];
+  if (raw.length <= MAX_TIMELINE_EVENTS) {
+    events = raw.map((e) => ({
+      rel: duration > 0 ? (e.t - firstT) / duration : 0,
+      type: e.type,
+    }));
+  } else {
+    const step = raw.length / MAX_TIMELINE_EVENTS;
+    events = Array.from({ length: MAX_TIMELINE_EVENTS }, (_, i) => {
+      const e = raw[Math.floor(i * step)]!;
+      return {
+        rel: duration > 0 ? (e.t - firstT) / duration : 0,
+        type: e.type,
+      };
+    });
+  }
+
+  return { duration, firstT, events };
+}
+
+/**
  * Replay a log file over a WebSocket connection.
- * Decompresses .xz / .gz files automatically.
- * Streams only "output" entries with original timing (scaled by speed).
- * Supports pause/resume via the provided ReplayController.
+ * - Decompresses .xz / .gz files automatically.
+ * - Fast-forwards all entries before startOffset (seconds from firstT) to restore terminal state.
+ * - Sends throttled {type:"progress", elapsed, rel} events during normal playback.
+ * - Supports pause/resume via ReplayController.
  */
 export async function replayToWebSocket(
-  ws: { send(data: string | Uint8Array): void; readyState: number; close(code?: number, reason?: string): void },
+  ws: {
+    send(data: string | Uint8Array): void;
+    readyState: number;
+    close(code?: number, reason?: string): void;
+  },
   logFile: string,
   speed: number = 1,
   controller: ReplayController = new ReplayController(),
+  startOffset: number = 0,   // seconds from firstT — fast-forward up to this point
+  duration: number = 0,      // total duration for progress rel calculation (0 = skip rel)
 ) {
   if (!existsSync(logFile)) {
     ws.send(JSON.stringify({ type: "error", message: "Log file not found" }));
@@ -68,76 +148,73 @@ export async function replayToWebSocket(
     return;
   }
 
-  let inputStream: NodeJS.ReadableStream;
+  const rl = readline.createInterface({ input: getInputStream(logFile) });
 
-  if (logFile.endsWith(".xz")) {
-    // Decompress with xz
-    const proc = spawn({
-      cmd: ["xz", "-d", "-c", logFile],
-      stdout: "pipe",
-    });
-    inputStream = Readable.fromWeb(proc.stdout as any);
-  } else if (logFile.endsWith(".gz")) {
-    // Decompress with zlib
-    const raw = createReadStream(logFile);
-    inputStream = raw.pipe(createGunzip());
-  } else {
-    // Plain .jsonl
-    inputStream = createReadStream(logFile);
-  }
-
-  const rl = readline.createInterface({ input: inputStream });
-
+  let firstT: number | null = null;
   let prevT: number | null = null;
+  let lastProgressMs = 0;
+  let fastFwdCount = 0;
 
   for await (const line of rl) {
-    // Check if WS is still open (readyState 1 = OPEN)
-    if (ws.readyState !== 1) {
-      rl.close();
-      return;
+    if (ws.readyState !== 1) { rl.close(); return; }
+
+    let entry: LogEntry;
+    try { entry = JSON.parse(line); }
+    catch { continue; }
+
+    if (firstT === null) firstT = entry.t;
+
+    const elapsed = entry.t - firstT;
+    const isFastForward = elapsed < startOffset;
+
+    if (isFastForward) {
+      // Write output to restore terminal state, but no delays or pause gates
+      if (entry.type === "output") {
+        ws.send(Buffer.from(entry.data, "base64").toString());
+      }
+      // Yield event loop every 1000 entries to avoid blocking
+      fastFwdCount++;
+      if (fastFwdCount % 1000 === 0) {
+        await new Promise((r) => setImmediate(r));
+        if (ws.readyState !== 1) { rl.close(); return; }
+      }
+      prevT = entry.t;
+      continue;
     }
+
+    // --- Normal playback ---
 
     // Wait if paused
     await controller.gate;
+    if (ws.readyState !== 1) { rl.close(); return; }
 
-    // Re-check after unpausing
-    if (ws.readyState !== 1) {
-      rl.close();
-      return;
-    }
-
-    let entry: LogEntry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue; // skip malformed lines
-    }
-
-    // Apply timing delay
+    // Timing delay
     if (prevT !== null) {
-      const rawDelay = (entry.t - prevT) * 1000; // sec → ms
+      const rawDelay = (entry.t - prevT) * 1000;
       if (rawDelay > 0) {
-        const scaledDelay = rawDelay / speed;
-        const delay = Math.min(scaledDelay, MAX_DELAY_MS);
+        const delay = Math.min(rawDelay / speed, MAX_DELAY_MS);
         if (delay > 1) {
           await sleep(delay);
-          // Re-check after delay (WS may have closed)
-          if (ws.readyState !== 1) {
-            rl.close();
-            return;
-          }
-          // Wait again if paused during the delay
+          if (ws.readyState !== 1) { rl.close(); return; }
+          // Re-check pause after delay
           await controller.gate;
+          if (ws.readyState !== 1) { rl.close(); return; }
         }
       }
     }
 
     prevT = entry.t;
 
-    // Only replay output entries
     if (entry.type === "output") {
-      const buf = Buffer.from(entry.data, "base64");
-      ws.send(buf.toString());
+      ws.send(Buffer.from(entry.data, "base64").toString());
+
+      // Throttled progress event
+      const now = Date.now();
+      if (now - lastProgressMs > PROGRESS_INTERVAL_MS) {
+        lastProgressMs = now;
+        const rel = duration > 0 ? Math.min(1, elapsed / duration) : 0;
+        ws.send(JSON.stringify({ type: "progress", elapsed, rel }));
+      }
     }
   }
 

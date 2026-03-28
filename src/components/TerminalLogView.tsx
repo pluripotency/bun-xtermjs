@@ -11,6 +11,17 @@ interface TerminalLogViewProps {
 
 type ReplayStatus = "idle" | "loading" | "playing" | "paused" | "done" | "error";
 
+interface TimelineEvent {
+  rel: number;
+  type: "input" | "output";
+}
+
+interface TimelineData {
+  duration: number;
+  firstT: number;
+  events: TimelineEvent[];
+}
+
 const SPEED_OPTIONS = [
   { label: "1×", value: 1 },
   { label: "2×", value: 2 },
@@ -19,17 +30,33 @@ const SPEED_OPTIONS = [
   { label: "50×", value: 50 },
 ];
 
+function formatTime(seconds: number): string {
+  if (!isFinite(seconds) || seconds < 0) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogViewProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const timelineBarRef = useRef<HTMLDivElement>(null);
 
   const [logFiles, setLogFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<string>("");
   const [speed, setSpeed] = useState(1);
   const [status, setStatus] = useState<ReplayStatus>("idle");
   const [errorMsg, setErrorMsg] = useState("");
+
+  // Timeline state
+  const [timeline, setTimeline] = useState<TimelineData | null>(null);
+  const [timelineLoading, setTimelineLoading] = useState(false);
+  const [seekRel, setSeekRel] = useState(0);        // 0–1: where to start from
+  const [playheadRel, setPlayheadRel] = useState(0); // 0–1: current replay position
+  const [isDragging, setIsDragging] = useState(false);
+  const [hoverRel, setHoverRel] = useState<number | null>(null);
 
   // Initialize xterm once
   useEffect(() => {
@@ -53,21 +80,14 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Delay open() until the container has been laid out by the browser
     const rafId = requestAnimationFrame(() => {
       if (!terminalRef.current) return;
       term.open(terminalRef.current);
-
-      setTimeout(() => {
-        try { fitAddon.fit(); } catch {}
-      }, 50);
-
+      setTimeout(() => { try { fitAddon.fit(); } catch {} }, 50);
       term.writeln("\x1b[2m── Select a log file and press Play to start replay ──\x1b[0m");
     });
 
-    const handleResize = () => {
-      try { fitAddon.fit(); } catch {}
-    };
+    const handleResize = () => { try { fitAddon.fit(); } catch {} };
     window.addEventListener("resize", handleResize);
 
     return () => {
@@ -90,36 +110,101 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
       .catch(() => setLogFiles([]));
   }, [token]);
 
-  // Start replay
-  const startReplay = useCallback(() => {
-    if (!selectedFile || !termRef.current) return;
+  // Fetch timeline when file changes
+  useEffect(() => {
+    if (!selectedFile) return;
+    setTimeline(null);
+    setSeekRel(0);
+    setPlayheadRel(0);
+    setTimelineLoading(true);
+    fetch(`/api/logs/timeline?file=${encodeURIComponent(selectedFile)}&token=${encodeURIComponent(token)}`)
+      .then((r) => r.json())
+      .then((data: TimelineData) => setTimeline(data))
+      .catch(() => setTimeline(null))
+      .finally(() => setTimelineLoading(false));
+  }, [selectedFile, token]);
 
-    // Close any existing replay WS
+  // --- Timeline drag helpers ---
+
+  const getRelFromClientX = useCallback((clientX: number): number => {
+    const bar = timelineBarRef.current;
+    if (!bar) return 0;
+    const rect = bar.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  }, []);
+
+  const stopCurrentReplay = useCallback(() => {
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
+  }, []);
 
-    // Clear terminal
+  const handleTimelineMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const rel = getRelFromClientX(e.clientX);
+    setSeekRel(rel);
+    setIsDragging(true);
+    // Stop any active replay; the user will click Play to resume from new position
+    stopCurrentReplay();
+    setStatus("idle");
+    setPlayheadRel(rel);
+  }, [getRelFromClientX, stopCurrentReplay]);
+
+  // Global mouse move + up for drag
+  useEffect(() => {
+    if (!isDragging) return;
+    const onMove = (e: MouseEvent) => setSeekRel(getRelFromClientX(e.clientX));
+    const onUp   = (e: MouseEvent) => {
+      setSeekRel(getRelFromClientX(e.clientX));
+      setIsDragging(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup",   onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup",   onUp);
+    };
+  }, [isDragging, getRelFromClientX]);
+
+  // --- Replay controls ---
+
+  const startReplay = useCallback(() => {
+    if (!selectedFile || !termRef.current) return;
+
+    stopCurrentReplay();
+
     termRef.current.reset();
     setStatus("loading");
     setErrorMsg("");
+    setPlayheadRel(seekRel); // fast-forward will restore state instantly
+
+    const startOffset = timeline ? seekRel * timeline.duration : 0;
+    const duration    = timeline?.duration ?? 0;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/api/logs/replay?file=${encodeURIComponent(selectedFile)}&token=${encodeURIComponent(token)}&speed=${speed}`;
+    const wsUrl = `${protocol}//${window.location.host}/api/logs/replay` +
+      `?file=${encodeURIComponent(selectedFile)}` +
+      `&token=${encodeURIComponent(token)}` +
+      `&speed=${speed}` +
+      `&startOffset=${startOffset}` +
+      `&duration=${duration}`;
+
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    ws.onopen = () => {
-      setStatus("playing");
-    };
+    ws.onopen = () => setStatus("playing");
 
     ws.onmessage = (event) => {
-      // Check for control messages
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "done") {
           setStatus("done");
+          setPlayheadRel(1);
+          return;
+        }
+        if (msg.type === "progress") {
+          if (duration > 0) setPlayheadRel(msg.rel);
           return;
         }
         if (msg.type === "error") {
@@ -128,20 +213,18 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
           return;
         }
       } catch {
-        // Not JSON — it's terminal data
+        // Not JSON — terminal data
       }
-
       termRef.current?.write(event.data);
     };
 
     ws.onclose = (event) => {
-      if (status !== "done" && status !== "error") {
-        if (event.code === 1000) {
-          setStatus("done");
-        } else if (event.code === 4004) {
-          setStatus("error");
-          setErrorMsg("Log file not found");
-        }
+      if (event.code === 1000) {
+        setStatus((s) => s === "playing" || s === "paused" ? "done" : s);
+        setPlayheadRel(1);
+      } else if (event.code === 4004) {
+        setStatus("error");
+        setErrorMsg("Log file not found");
       }
     };
 
@@ -149,9 +232,9 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
       setStatus("error");
       setErrorMsg("WebSocket connection error");
     };
-  }, [selectedFile, token, speed, status]);
+  }, [selectedFile, token, speed, seekRel, timeline, stopCurrentReplay]);
 
-  // Pause / Resume replay
+  // Pause / Resume
   const togglePause = useCallback(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -166,47 +249,43 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
 
   // Stop replay
   const stopReplay = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
+    stopCurrentReplay();
     setStatus("idle");
-  }, []);
+  }, [stopCurrentReplay]);
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-    };
-  }, []);
+    return () => { stopCurrentReplay(); };
+  }, [stopCurrentReplay]);
 
   const isActive = status === "playing" || status === "loading" || status === "paused";
 
-  const statusLabel = {
-    idle: "",
+  const statusLabel: Record<ReplayStatus, string> = {
+    idle:    "",
     loading: "Connecting…",
     playing: "▶ Replaying",
-    paused: "⏸ Paused",
-    done: "✓ Replay complete",
-    error: `✕ ${errorMsg}`,
-  }[status];
+    paused:  "⏸ Paused",
+    done:    "✓ Replay complete",
+    error:   `✕ ${errorMsg}`,
+  };
 
-  const statusColor = {
-    idle: "",
+  const statusColor: Record<ReplayStatus, string> = {
+    idle:    "",
     loading: "text-yellow-400",
     playing: "text-green-400",
-    paused: "text-orange-400",
-    done: "text-blue-400",
-    error: "text-red-400",
-  }[status];
+    paused:  "text-orange-400",
+    done:    "text-blue-400",
+    error:   "text-red-400",
+  };
+
+  const seekTime = timeline ? seekRel * timeline.duration : 0;
 
   return (
     <div className="w-full h-full flex flex-col bg-[#1a1b26]">
-      {/* Control bar */}
+
+      {/* ── Control bar ── */}
       <div className="flex items-center gap-3 px-4 py-2 bg-[#16161e] border-b border-[#292e42] flex-shrink-0">
+
         {/* Terminal button */}
         <button
           onClick={onBack}
@@ -228,15 +307,13 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
         {/* Log file selector */}
         <select
           value={selectedFile}
-          onChange={(e) => setSelectedFile(e.target.value)}
+          onChange={(e) => { setSelectedFile(e.target.value); stopCurrentReplay(); setStatus("idle"); }}
           disabled={isActive}
           className="px-2 py-1.5 text-xs rounded-md bg-[#292e42] text-[#a9b1d6] border border-[#3b4261] focus:border-[#7aa2f7] focus:outline-none disabled:opacity-50 max-w-[280px] truncate"
         >
           {logFiles.length === 0 && <option value="">No log files found</option>}
           {logFiles.map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
+            <option key={f} value={f}>{f}</option>
           ))}
         </select>
 
@@ -274,7 +351,6 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
           </button>
         ) : (
           <div className="flex gap-1.5">
-            {/* Pause / Resume */}
             <button
               onClick={togglePause}
               disabled={status === "loading"}
@@ -286,7 +362,6 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
             >
               {status === "paused" ? "▶ Resume" : "⏸ Pause"}
             </button>
-            {/* Stop */}
             <button
               onClick={stopReplay}
               className="px-3 py-1.5 text-xs font-medium rounded-md bg-[#f7768e] text-[#1a1b26] hover:bg-[#ff9e64] transition-colors"
@@ -297,16 +372,107 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
         )}
 
         {/* Status */}
-        {statusLabel && (
-          <span className={`text-xs font-mono ${statusColor} ml-auto ${
+        {statusLabel[status] && (
+          <span className={`text-xs font-mono ${statusColor[status]} ml-auto ${
             status === "playing" || status === "loading" ? "animate-pulse" : ""
           }`}>
-            {statusLabel}
+            {statusLabel[status]}
           </span>
         )}
       </div>
 
-      {/* Terminal */}
+      {/* ── Timeline ── */}
+      <div className="px-3 py-1.5 bg-[#13131a] border-b border-[#292e42] flex items-center gap-2 flex-shrink-0 select-none">
+        {/* Seek time label */}
+        <span className="text-[10px] font-mono text-[#a9b1d6] w-[36px] text-right flex-shrink-0">
+          {formatTime(seekTime)}
+        </span>
+
+        {/* Timeline bar */}
+        {timelineLoading ? (
+          <div className="flex-1 h-4 flex items-center">
+            <div className="w-full h-[4px] rounded-full bg-[#292e42] animate-pulse" />
+          </div>
+        ) : (
+          <div
+            ref={timelineBarRef}
+            className="relative flex-1 h-[28px] cursor-pointer"
+            onMouseDown={handleTimelineMouseDown}
+            onMouseMove={(e) => { if (!isDragging) setHoverRel(getRelFromClientX(e.clientX)); }}
+            onMouseLeave={() => { if (!isDragging) setHoverRel(null); }}
+          >
+            {/* Track background */}
+            <div className="absolute left-0 right-0 top-[12px] h-[4px] rounded-full bg-[#292e42]" />
+
+            {/* Playhead fill */}
+            <div
+              className="absolute top-[12px] h-[4px] rounded-full bg-[#7aa2f7]/40 pointer-events-none"
+              style={{ width: `${playheadRel * 100}%` }}
+            />
+
+            {/* Event markers */}
+            {timeline?.events.map((ev, i) => (
+              <div
+                key={i}
+                className="absolute pointer-events-none"
+                style={{
+                  left: `${ev.rel * 100}%`,
+                  top: "8px",
+                  height: "12px",
+                  width: "1px",
+                  background: ev.type === "output" ? "#7aa2f7" : "#9ece6a",
+                  opacity: 0.4,
+                }}
+              />
+            ))}
+
+            {/* Seek cursor line */}
+            <div
+              className="absolute top-[6px] h-[16px] w-[2px] rounded-full bg-white/80 pointer-events-none"
+              style={{ left: `${seekRel * 100}%`, transform: "translateX(-50%)" }}
+            />
+
+            {/* Seek handle dot */}
+            <div
+              className={`absolute w-[12px] h-[12px] rounded-full border-2 pointer-events-none transition-transform ${
+                isDragging ? "bg-white border-[#7aa2f7] scale-125" : "bg-white border-[#292e42]"
+              }`}
+              style={{
+                left: `${seekRel * 100}%`,
+                top: "8px",
+                transform: "translateX(-50%)",
+              }}
+            />
+
+            {/* Hover tooltip */}
+            {hoverRel !== null && !isDragging && timeline && (
+              <div
+                className="absolute -top-5 px-1 py-0.5 text-[9px] font-mono bg-[#24283b] text-[#a9b1d6] rounded pointer-events-none whitespace-nowrap shadow"
+                style={{ left: `${hoverRel * 100}%`, transform: "translateX(-50%)" }}
+              >
+                {formatTime(hoverRel * timeline.duration)}
+              </div>
+            )}
+
+            {/* Drag tooltip */}
+            {isDragging && timeline && (
+              <div
+                className="absolute -top-5 px-1 py-0.5 text-[9px] font-mono bg-[#7aa2f7] text-[#1a1b26] rounded pointer-events-none whitespace-nowrap shadow font-bold"
+                style={{ left: `${seekRel * 100}%`, transform: "translateX(-50%)" }}
+              >
+                {formatTime(seekRel * timeline.duration)}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Total duration label */}
+        <span className="text-[10px] font-mono text-[#565f89] w-[36px] flex-shrink-0">
+          {formatTime(timeline?.duration ?? 0)}
+        </span>
+      </div>
+
+      {/* ── Terminal ── */}
       <div className="flex-1 overflow-hidden p-0 m-0">
         <div ref={terminalRef} className="w-full h-full" />
       </div>

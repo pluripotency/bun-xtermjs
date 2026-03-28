@@ -4,7 +4,7 @@ import { spawn } from "bun-pty";
 import type { IPty } from "bun-pty";
 import { config } from "./config";
 import { PTYLogger, createLogFilename } from "./logger";
-import { replayToWebSocket, ReplayController } from "./replay-ws";
+import { replayToWebSocket, ReplayController, readTimeline } from "./replay-ws";
 import { readdir } from "fs/promises";
 import path from "path";
 
@@ -32,6 +32,22 @@ const server = serve({
         } catch {
           return Response.json([]);
         }
+      },
+    },
+    "/api/logs/timeline": {
+      async GET(req) {
+        const url = new URL(req.url);
+        const token = url.searchParams.get("token");
+        if (token !== config.TERMINAL_PASSWORD) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+        const file = url.searchParams.get("file");
+        if (!file) return new Response("Missing file parameter", { status: 400 });
+        const basename = path.basename(file);
+        if (basename !== file) return new Response("Invalid file parameter", { status: 400 });
+        const logFile = path.join(config.session_log_dir, basename);
+        const data = await readTimeline(logFile);
+        return Response.json(data);
       },
     },
   },
@@ -75,6 +91,8 @@ const server = serve({
       }
 
       const speed = Math.min(Math.max(parseFloat(url.searchParams.get("speed") || "1"), 0.1), 100);
+      const startOffset = Math.max(0, parseFloat(url.searchParams.get("startOffset") || "0"));
+      const duration = Math.max(0, parseFloat(url.searchParams.get("duration") || "0"));
 
       const upgraded = server.upgrade(req, {
         data: {
@@ -82,6 +100,8 @@ const server = serve({
           wsType: "replay",
           logFile: path.join(config.session_log_dir, basename),
           speed,
+          startOffset,
+          duration,
         }
       });
       if (upgraded) return;
@@ -98,10 +118,10 @@ const server = serve({
 
       if (wsType === "replay") {
         // Start log replay
-        const { logFile, speed } = ws.data as any;
+        const { logFile, speed, startOffset, duration } = ws.data as any;
         const controller = new ReplayController();
         (ws.data as any).controller = controller;
-        replayToWebSocket(ws as any, logFile, speed, controller).catch((err) => {
+        replayToWebSocket(ws as any, logFile, speed, controller, startOffset, duration).catch((err) => {
           console.error("Replay error:", err);
           try { ws.close(4500, "Replay error"); } catch {}
         });
