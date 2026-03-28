@@ -3,8 +3,8 @@ import index from "./index.html";
 import { spawn } from "bun-pty";
 import type { IPty } from "bun-pty";
 import { config } from "./config";
-import { PTYLogger, createLogFilename } from "./logger";
-import { replayToWebSocket, ReplayController, readTimeline } from "./replay-ws";
+import { PTYLogger, createLogFilename } from "./server/logger";
+import { replayToWebSocket, ReplayController, readTimeline } from "./server/replay-ws";
 import { readdir } from "fs/promises";
 import path from "path";
 
