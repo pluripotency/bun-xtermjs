@@ -93,6 +93,7 @@ const server = serve({
       const speed = Math.min(Math.max(parseFloat(url.searchParams.get("speed") || "1"), 0.1), 100);
       const startOffset = Math.max(0, parseFloat(url.searchParams.get("startOffset") || "0"));
       const duration = Math.max(0, parseFloat(url.searchParams.get("duration") || "0"));
+      const paused = url.searchParams.get("paused") === "true";
 
       const upgraded = server.upgrade(req, {
         data: {
@@ -102,6 +103,7 @@ const server = serve({
           speed,
           startOffset,
           duration,
+          paused,
         }
       });
       if (upgraded) return;
@@ -118,8 +120,9 @@ const server = serve({
 
       if (wsType === "replay") {
         // Start log replay
-        const { logFile, speed, startOffset, duration } = ws.data as any;
+        const { logFile, speed, startOffset, duration, paused } = ws.data as any;
         const controller = new ReplayController();
+        if (paused) controller.pause();
         (ws.data as any).controller = controller;
         replayToWebSocket(ws as any, logFile, speed, controller, startOffset, duration).catch((err) => {
           console.error("Replay error:", err);

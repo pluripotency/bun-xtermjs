@@ -57,6 +57,7 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
   const [playheadRel, setPlayheadRel] = useState(0); // 0–1: current replay position
   const [isDragging, setIsDragging] = useState(false);
   const [hoverRel, setHoverRel] = useState<number | null>(null);
+  const [wasPlayingBeforeDrag, setWasPlayingBeforeDrag] = useState(false);
 
   // Initialize xterm once
   useEffect(() => {
@@ -140,46 +141,21 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
     }
   }, []);
 
-  const handleTimelineMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    const rel = getRelFromClientX(e.clientX);
-    setSeekRel(rel);
-    setIsDragging(true);
-    // Stop any active replay; the user will click Play to resume from new position
-    stopCurrentReplay();
-    setStatus("idle");
-    setPlayheadRel(rel);
-  }, [getRelFromClientX, stopCurrentReplay]);
-
-  // Global mouse move + up for drag
-  useEffect(() => {
-    if (!isDragging) return;
-    const onMove = (e: MouseEvent) => setSeekRel(getRelFromClientX(e.clientX));
-    const onUp   = (e: MouseEvent) => {
-      setSeekRel(getRelFromClientX(e.clientX));
-      setIsDragging(false);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup",   onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup",   onUp);
-    };
-  }, [isDragging, getRelFromClientX]);
-
   // --- Replay controls ---
 
-  const startReplay = useCallback(() => {
+  const startReplay = useCallback((targetRel?: number, startPaused: boolean = false) => {
     if (!selectedFile || !termRef.current) return;
+
+    const relToUse = targetRel !== undefined ? targetRel : seekRel;
 
     stopCurrentReplay();
 
     termRef.current.reset();
     setStatus("loading");
     setErrorMsg("");
-    setPlayheadRel(seekRel); // fast-forward will restore state instantly
+    setPlayheadRel(relToUse); // fast-forward will restore state instantly
 
-    const startOffset = timeline ? seekRel * timeline.duration : 0;
+    const startOffset = timeline ? relToUse * timeline.duration : 0;
     const duration    = timeline?.duration ?? 0;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -188,12 +164,13 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
       `&token=${encodeURIComponent(token)}` +
       `&speed=${speed}` +
       `&startOffset=${startOffset}` +
-      `&duration=${duration}`;
+      `&duration=${duration}` +
+      (startPaused ? `&paused=true` : ``);
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    ws.onopen = () => setStatus("playing");
+    ws.onopen = () => setStatus(startPaused ? "paused" : "playing");
 
     ws.onmessage = (event) => {
       try {
@@ -233,6 +210,39 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
       setErrorMsg("WebSocket connection error");
     };
   }, [selectedFile, token, speed, seekRel, timeline, stopCurrentReplay]);
+
+  const handleTimelineMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const rel = getRelFromClientX(e.clientX);
+    setSeekRel(rel);
+    setIsDragging(true);
+    setWasPlayingBeforeDrag(status === "playing");
+    stopCurrentReplay();
+    setStatus("idle");
+    setPlayheadRel(rel);
+  }, [getRelFromClientX, stopCurrentReplay, status]);
+
+  // Global mouse move + up for drag
+  useEffect(() => {
+    if (!isDragging) return;
+    const onMove = (e: MouseEvent) => {
+      const rel = getRelFromClientX(e.clientX);
+      setSeekRel(rel);
+      setPlayheadRel(rel);
+    };
+    const onUp   = (e: MouseEvent) => {
+      const rel = getRelFromClientX(e.clientX);
+      setSeekRel(rel);
+      setIsDragging(false);
+      startReplay(rel, !wasPlayingBeforeDrag);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup",   onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup",   onUp);
+    };
+  }, [isDragging, getRelFromClientX, startReplay, wasPlayingBeforeDrag]);
 
   // Pause / Resume
   const togglePause = useCallback(() => {
@@ -343,7 +353,7 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
         {/* Play / Pause / Stop */}
         {!isActive ? (
           <button
-            onClick={startReplay}
+            onClick={() => startReplay()}
             disabled={!selectedFile || logFiles.length === 0}
             className="px-4 py-1.5 text-xs font-medium rounded-md bg-[#9ece6a] text-[#1a1b26] hover:bg-[#73daca] transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
           >
