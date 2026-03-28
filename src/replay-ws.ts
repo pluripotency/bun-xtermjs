@@ -10,7 +10,7 @@ type LogEntry = {
   data: string; // base64
 };
 
-const MAX_DELAY_MS = 100;
+const MAX_DELAY_MS = 2000;
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
