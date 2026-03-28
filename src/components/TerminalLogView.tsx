@@ -205,7 +205,7 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
           onClick={onDisconnect}
           className="px-3 py-1.5 text-xs font-medium rounded-md bg-[#292e42] text-[#f7768e] hover:bg-[#33467c] transition-colors"
         >
-          Disconnect
+          Log Out
         </button>
 
         <div className="w-px h-5 bg-[#292e42]" />
