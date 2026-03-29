@@ -14,6 +14,19 @@ const server = serve({
   port: config.port,
   routes: {
     "/*": index,
+    "/api/auth": {
+      async POST(req) {
+        try {
+          const body = await req.json();
+          if (body.token === config.TERMINAL_PASSWORD) {
+            return Response.json({ success: true });
+          }
+          return new Response("Unauthorized", { status: 401 });
+        } catch {
+          return new Response("Bad Request", { status: 400 });
+        }
+      },
+    },
     "/api/logs": {
       async GET(req) {
         const url = new URL(req.url);

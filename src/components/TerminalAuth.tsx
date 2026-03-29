@@ -19,7 +19,22 @@ export function TerminalAuth({ onAuthenticated, initialError }: TerminalAuthProp
       return;
     }
     setError("");
-    onAuthenticated(password);
+    
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: password }),
+      });
+      
+      if (res.ok) {
+        onAuthenticated(password);
+      } else {
+        setError("Invalid password");
+      }
+    } catch (err) {
+      setError("Failed to connect to server");
+    }
   };
 
   return (
