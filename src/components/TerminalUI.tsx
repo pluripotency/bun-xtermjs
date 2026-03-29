@@ -4,11 +4,10 @@ import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
 
 interface TerminalUIProps {
-  token: string;
   onDisconnect: (reason?: string) => void;
 }
 
-export function TerminalUI({ token, onDisconnect }: TerminalUIProps) {
+export function TerminalUI({ onDisconnect }: TerminalUIProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -31,7 +30,7 @@ export function TerminalUI({ token, onDisconnect }: TerminalUIProps) {
     let fitTimeout: ReturnType<typeof setTimeout>;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws?token=${encodeURIComponent(token)}`;
+    const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws`;
     ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -111,7 +110,7 @@ export function TerminalUI({ token, onDisconnect }: TerminalUIProps) {
       }
       term.dispose();
     };
-  }, [token, onDisconnect]);
+  }, [onDisconnect]);
 
   return (
     <div className="w-full h-full bg-[#1e1e1e] overflow-hidden p-0 m-0 text-left">

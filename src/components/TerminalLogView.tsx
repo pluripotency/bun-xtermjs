@@ -4,7 +4,6 @@ import { FitAddon } from "xterm-addon-fit";
 import "xterm/css/xterm.css";
 
 interface TerminalLogViewProps {
-  token: string;
   onBack: () => void;
   onDisconnect: () => void;
 }
@@ -37,7 +36,7 @@ function formatTime(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogViewProps) {
+export function TerminalLogView({ onBack, onDisconnect }: TerminalLogViewProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -102,14 +101,14 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
 
   // Fetch log file list
   useEffect(() => {
-    fetch(`/api/logs?token=${encodeURIComponent(token)}`)
+    fetch(`/api/logs`)
       .then((r) => r.json())
       .then((files: string[]) => {
         setLogFiles(files);
         if (files.length > 0 && files[0] !== undefined) setSelectedFile(files[0]);
       })
       .catch(() => setLogFiles([]));
-  }, [token]);
+  }, []);
 
   // Fetch timeline when file changes
   useEffect(() => {
@@ -118,12 +117,12 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
     setSeekRel(0);
     setPlayheadRel(0);
     setTimelineLoading(true);
-    fetch(`/api/logs/timeline?file=${encodeURIComponent(selectedFile)}&token=${encodeURIComponent(token)}`)
+    fetch(`/api/logs/timeline?file=${encodeURIComponent(selectedFile)}`)
       .then((r) => r.json())
       .then((data: TimelineData) => setTimeline(data))
       .catch(() => setTimeline(null))
       .finally(() => setTimelineLoading(false));
-  }, [selectedFile, token]);
+  }, [selectedFile]);
 
   // --- Timeline drag helpers ---
 
@@ -161,7 +160,6 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/api/logs/replay` +
       `?file=${encodeURIComponent(selectedFile)}` +
-      `&token=${encodeURIComponent(token)}` +
       `&speed=${speed}` +
       `&startOffset=${startOffset}` +
       `&duration=${duration}` +
@@ -209,7 +207,7 @@ export function TerminalLogView({ token, onBack, onDisconnect }: TerminalLogView
       setStatus("error");
       setErrorMsg("WebSocket connection error");
     };
-  }, [selectedFile, token, speed, seekRel, timeline, stopCurrentReplay]);
+  }, [selectedFile, speed, seekRel, timeline, stopCurrentReplay]);
 
   const handleTimelineMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

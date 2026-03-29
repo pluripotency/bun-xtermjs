@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { TerminalAuth } from "./components/TerminalAuth";
 import { TerminalUI } from "./components/TerminalUI";
 import { TerminalLogView } from "./components/TerminalLogView";
@@ -8,16 +8,36 @@ import "./index.css";
 type View = "terminal" | "logs";
 
 export function App() {
-  const [token, setToken] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isChecking, setIsChecking] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("logs");
 
-  if (!token) {
+  useEffect(() => {
+    fetch("/api/check")
+      .then(res => {
+        if (res.ok) setIsAuthenticated(true);
+      })
+      .catch(() => {})
+      .finally(() => setIsChecking(false));
+  }, []);
+
+  const handleLogout = async () => {
+    await fetch("/api/logout", { method: "POST" });
+    setIsAuthenticated(false);
+    setView("logs");
+  };
+
+  if (isChecking) {
+    return <div className="w-screen h-screen bg-[#1a1b26] flex items-center justify-center text-white">Loading...</div>;
+  }
+
+  if (!isAuthenticated) {
     return (
-      <div className="flex flex-col items-center justify-center w-screen h-screen">
+      <div className="flex flex-col items-center justify-center w-screen h-screen bg-[#1a1b26]">
         <TerminalAuth 
-          onAuthenticated={(t) => {
-            setToken(t);
+          onAuthenticated={() => {
+            setIsAuthenticated(true);
             setError(null);
           }} 
           initialError={error} 
@@ -41,20 +61,15 @@ export function App() {
           <Button 
             variant="destructive" 
             size="sm"
-            onClick={() => {
-              setToken(null);
-              setView("logs");
-            }}
+            onClick={handleLogout}
             className="opacity-50 hover:opacity-100 transition-opacity"
           >
             Disconnect
           </Button>
         </div>
         <TerminalUI 
-          token={token} 
           onDisconnect={(reason) => {
-            setToken(null);
-            setView("logs");
+            handleLogout();
             setError(reason || "Connection failed or disconnected.");
           }} 
         />
@@ -65,16 +80,11 @@ export function App() {
   return (
     <div className="w-screen h-screen relative bg-[#1a1b26]">
       <TerminalLogView
-        token={token}
         onBack={() => setView("terminal")}
-        onDisconnect={() => {
-          setToken(null);
-          setView("logs");
-        }}
+        onDisconnect={handleLogout}
       />
     </div>
   );
 }
 
 export default App;
-

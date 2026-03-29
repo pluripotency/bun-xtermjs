@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
 interface TerminalAuthProps {
-  onAuthenticated: (token: string) => void;
+  onAuthenticated: () => void;
   initialError?: string | null;
 }
 
@@ -28,7 +28,7 @@ export function TerminalAuth({ onAuthenticated, initialError }: TerminalAuthProp
       });
       
       if (res.ok) {
-        onAuthenticated(password);
+        onAuthenticated();
       } else {
         setError("Invalid password");
       }

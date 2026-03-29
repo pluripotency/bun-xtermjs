@@ -5,6 +5,7 @@ import type { IPty } from "bun-pty";
 import { config } from "./config";
 import { PTYLogger, createLogFilename } from "./server/logger";
 import { replayToWebSocket, ReplayController, readTimeline } from "./server/replay-ws";
+import { createAuthCookie, verifyAuthCookie, clearAuthCookie } from "./server/auth";
 import { readdir } from "fs/promises";
 import path from "path";
 
@@ -19,7 +20,13 @@ const server = serve({
         try {
           const body = await req.json();
           if (body.token === config.TERMINAL_PASSWORD) {
-            return Response.json({ success: true });
+            const cookieStr = createAuthCookie();
+            return new Response(JSON.stringify({ success: true }), {
+              headers: {
+                "Content-Type": "application/json",
+                "Set-Cookie": cookieStr
+              }
+            });
           }
           return new Response("Unauthorized", { status: 401 });
         } catch {
@@ -27,11 +34,28 @@ const server = serve({
         }
       },
     },
+    "/api/logout": {
+      async POST() {
+        const cookieStr = clearAuthCookie();
+        return new Response(JSON.stringify({ success: true }), {
+          headers: {
+            "Content-Type": "application/json",
+            "Set-Cookie": cookieStr
+          }
+        });
+      }
+    },
+    "/api/check": {
+      async GET(req) {
+        if (verifyAuthCookie(req)) {
+          return Response.json({ authenticated: true });
+        }
+        return new Response("Unauthorized", { status: 401 });
+      }
+    },
     "/api/logs": {
       async GET(req) {
-        const url = new URL(req.url);
-        const token = url.searchParams.get("token");
-        if (token !== config.TERMINAL_PASSWORD) {
+        if (!verifyAuthCookie(req)) {
           return new Response("Unauthorized", { status: 401 });
         }
 
@@ -49,11 +73,10 @@ const server = serve({
     },
     "/api/logs/timeline": {
       async GET(req) {
-        const url = new URL(req.url);
-        const token = url.searchParams.get("token");
-        if (token !== config.TERMINAL_PASSWORD) {
+        if (!verifyAuthCookie(req)) {
           return new Response("Unauthorized", { status: 401 });
         }
+        const url = new URL(req.url);
         const file = url.searchParams.get("file");
         if (!file) return new Response("Missing file parameter", { status: 400 });
         const basename = path.basename(file);
@@ -70,14 +93,12 @@ const server = serve({
 
     // --- WebSocket: live terminal ---
     if (url.pathname === "/api/terminal/ws") {
-      const token = url.searchParams.get("token");
-      if (token !== config.TERMINAL_PASSWORD) {
+      if (!verifyAuthCookie(req)) {
         return new Response("Unauthorized", { status: 401 });
       }
       
       const upgraded = server.upgrade(req, {
         data: {
-          token,
           wsType: "terminal",
         }
       });
@@ -87,8 +108,7 @@ const server = serve({
 
     // --- WebSocket: log replay ---
     if (url.pathname === "/api/logs/replay") {
-      const token = url.searchParams.get("token");
-      if (token !== config.TERMINAL_PASSWORD) {
+      if (!verifyAuthCookie(req)) {
         return new Response("Unauthorized", { status: 401 });
       }
 
@@ -110,7 +130,6 @@ const server = serve({
 
       const upgraded = server.upgrade(req, {
         data: {
-          token,
           wsType: "replay",
           logFile: path.join(config.session_log_dir, basename),
           speed,
